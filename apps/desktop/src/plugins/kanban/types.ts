@@ -10,6 +10,10 @@ export interface KanbanTask {
   status: string
   assignee?: null | string
   priority?: number
+  /** Skills force-loaded into the worker (`--skills <id>` per entry). Always an
+   *  array from the backend; absent/null on responses that predate the array
+   *  migration, so readers tolerate both. */
+  skills?: null | string[]
   tenant?: null | string
   created_at?: number
   latest_summary?: null | string
@@ -214,6 +218,35 @@ export interface OrchestrationSettings {
   auto_decompose: boolean
   resolved_orchestrator_profile: string
   resolved_default_assignee: string
+}
+
+/** One row of the skills catalog (GET /skills) — an id that resolves for at
+ *  least one profile, plus where it applies. Contract:
+ *  `hermes_cli/skills_catalog.py` (module docstring). */
+export interface SkillOption {
+  id: string
+  label: string
+  category?: null | string
+  description?: null | string
+  /** Installed for the requested profile (or somewhere, in catalog scope) and
+   *  enabled there. */
+  applicable: boolean
+  /** The profiles this skill is applicable to. */
+  profiles: string[]
+}
+
+/** GET /skills[?profile=] — the skills a card's worker can actually load.
+ *  `scope: 'profile'` = the requested profile's applicable skills only;
+ *  `'catalog'` = every skill installed in any profile (no/unknown profile),
+ *  with `resolved: false` when the requested profile name is unknown. */
+export interface SkillsCatalog {
+  scope: 'catalog' | 'profile'
+  profile: null | string
+  requested_profile: null | string
+  resolved: boolean
+  profiles: string[]
+  count: number
+  skills: SkillOption[]
 }
 
 /** GET /profiles — the roster the decomposer routes across. */

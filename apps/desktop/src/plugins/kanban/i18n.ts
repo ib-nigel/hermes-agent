@@ -76,7 +76,22 @@ type KanbanMessages = {
   defaultOption: (name: string) => string
   parkedOption: string
   skills: string
-  skillsPlaceholder: string
+  skillsHint: string
+  skillsChoose: string
+  skillsRemove: (id: string) => string
+  skillsSearch: string
+  skillsNone: string
+  skillsNoneSelected: string
+  skillsNoneForProfile: string
+  skillsNoMatch: (q: string) => string
+  skillsTruncated: (shown: number, total: number) => string
+  skillsLoadFailed: string
+  skillsRetry: string
+  skillsScopeProfile: (profile: string) => string
+  skillsScopeCatalog: string
+  skillsProfileUnknown: (profile: string) => string
+  skillsMissingWarn: (profile: string, ids: string) => string
+  skillNotAvailable: (profile: string) => string
   parent: string
   noParent: string
   goalMode: string
@@ -293,8 +308,26 @@ export const en: KanbanMessages = {
   assignee: 'Assignee',
   defaultOption: name => `${name} (default)`,
   parkedOption: "unassigned (parked — won't run)",
-  skills: 'Skills (comma-separated)',
-  skillsPlaceholder: 'translation, github',
+  skills: 'Skills',
+  skillsHint: "(optional — picked from the assignee's applicable skills)",
+  skillsChoose: 'Choose skills…',
+  skillsRemove: id => `Remove ${id}`,
+  skillsSearch: 'Search skills…',
+  skillsNone: '(none)',
+  skillsNoneSelected: 'No extra skills — the worker loads only its built-in kanban-worker.',
+  skillsNoneForProfile: 'This profile has no applicable skills.',
+  skillsNoMatch: q => `No skills match “${q}”.`,
+  skillsTruncated: (shown, total) => `Showing ${shown} of ${total} matches — refine the search.`,
+  skillsLoadFailed: 'Could not load skills',
+  skillsRetry: 'Retry',
+  skillsScopeProfile: profile => `Only skills applicable to ${profile} are listed.`,
+  skillsScopeCatalog:
+    'Assign a profile to narrow this list to the skills that profile can load — showing the full catalog.',
+  skillsProfileUnknown: profile =>
+    `“${profile}” is not an installed profile — showing the full catalog. The worker would fall back to the dispatcher's own profile.`,
+  skillsMissingWarn: (profile, ids) =>
+    `Not available to ${profile}: ${ids}. Kept on the card and flagged — remove them, or assign a profile that has them.`,
+  skillNotAvailable: profile => `Not available to ${profile} — the worker would not load it.`,
   parent: "Parent (blocks until it's done)",
   noParent: '— no parent —',
   goalMode: "Goal mode (worker loops until a judge agrees it's done)",
@@ -507,8 +540,26 @@ const ja: KanbanMessages = {
   assignee: '担当',
   defaultOption: name => `${name}（既定）`,
   parkedOption: '未割り当て（保留 — 実行されません）',
-  skills: 'スキル（カンマ区切り）',
-  skillsPlaceholder: 'translation, github',
+  skills: 'スキル',
+  skillsHint: '（任意 — 担当プロファイルが読み込めるスキルから選択）',
+  skillsChoose: 'スキルを選択…',
+  skillsRemove: id => `${id} を削除`,
+  skillsSearch: 'スキルを検索…',
+  skillsNone: '（なし）',
+  skillsNoneSelected: '追加スキルなし — ワーカーは組み込みの kanban-worker のみを読み込みます。',
+  skillsNoneForProfile: 'このプロファイルに該当するスキルはありません。',
+  skillsNoMatch: q => `「${q}」に一致するスキルはありません。`,
+  skillsTruncated: (shown, total) => `${total} 件中 ${shown} 件を表示 — 検索で絞り込んでください。`,
+  skillsLoadFailed: 'スキルを読み込めませんでした',
+  skillsRetry: '再試行',
+  skillsScopeProfile: profile => `${profile} に適用可能なスキルのみ表示しています。`,
+  skillsScopeCatalog:
+    'プロファイルを割り当てると、そのプロファイルが読み込めるスキルだけに絞り込めます — 現在は全カタログを表示しています。',
+  skillsProfileUnknown: profile =>
+    `「${profile}」はインストール済みプロファイルではありません — 全カタログを表示しています。ワーカーはディスパッチャー自身のプロファイルにフォールバックします。`,
+  skillsMissingWarn: (profile, ids) =>
+    `${profile} では利用不可: ${ids}。カードに保持したまま警告表示しています — 削除するか、これらを持つプロファイルを割り当ててください。`,
+  skillNotAvailable: profile => `${profile} では利用不可 — ワーカーは読み込みません。`,
   parent: '親（完了するまでブロック）',
   noParent: '— 親なし —',
   goalMode: 'ゴールモード（ジャッジが完了と認めるまでワーカーがループ）',
@@ -719,8 +770,24 @@ const zh: KanbanMessages = {
   assignee: '负责人',
   defaultOption: name => `${name}（默认）`,
   parkedOption: '未分配（搁置 — 不会运行）',
-  skills: '技能（逗号分隔）',
-  skillsPlaceholder: 'translation, github',
+  skills: '技能',
+  skillsHint: '（可选 — 从负责人档案可加载的技能中选择）',
+  skillsChoose: '选择技能…',
+  skillsRemove: id => `移除 ${id}`,
+  skillsSearch: '搜索技能…',
+  skillsNone: '（无）',
+  skillsNoneSelected: '无额外技能 — 工作单元只加载内置的 kanban-worker。',
+  skillsNoneForProfile: '该档案没有可用的技能。',
+  skillsNoMatch: q => `没有匹配“${q}”的技能。`,
+  skillsTruncated: (shown, total) => `显示 ${total} 个匹配中的 ${shown} 个 — 请细化搜索。`,
+  skillsLoadFailed: '无法加载技能',
+  skillsRetry: '重试',
+  skillsScopeProfile: profile => `仅列出适用于 ${profile} 的技能。`,
+  skillsScopeCatalog: '指定负责人档案可将此列表缩小到该档案能加载的技能 — 当前显示完整目录。',
+  skillsProfileUnknown: profile => `“${profile}”不是已安装的档案 — 显示完整目录。工作单元将回退到调度器自身的档案。`,
+  skillsMissingWarn: (profile, ids) =>
+    `${profile} 不可用：${ids}。已保留在卡片上并标记 — 请移除，或指定拥有它们的档案。`,
+  skillNotAvailable: profile => `${profile} 不可用 — 工作单元不会加载它。`,
   parent: '父任务（完成前会阻塞）',
   noParent: '— 无父任务 —',
   goalMode: '目标模式（工作单元循环直到评判代理认可完成）',
@@ -929,8 +996,25 @@ const zhHant: KanbanMessages = {
   assignee: '負責人',
   defaultOption: name => `${name}（預設）`,
   parkedOption: '未指派（擱置 — 不會執行）',
-  skills: '技能（以逗號分隔）',
-  skillsPlaceholder: 'translation, github',
+  skills: '技能',
+  skillsHint: '（選用 — 從負責人設定檔可載入的技能中挑選）',
+  skillsChoose: '選擇技能…',
+  skillsRemove: id => `移除 ${id}`,
+  skillsSearch: '搜尋技能…',
+  skillsNone: '（無）',
+  skillsNoneSelected: '無額外技能 — 工作單元只載入內建的 kanban-worker。',
+  skillsNoneForProfile: '此設定檔沒有適用的技能。',
+  skillsNoMatch: q => `沒有符合「${q}」的技能。`,
+  skillsTruncated: (shown, total) => `顯示 ${total} 個符合項目中的 ${shown} 個 — 請縮小搜尋範圍。`,
+  skillsLoadFailed: '無法載入技能',
+  skillsRetry: '重試',
+  skillsScopeProfile: profile => `僅列出適用於 ${profile} 的技能。`,
+  skillsScopeCatalog: '指派設定檔可將此清單縮小到該設定檔能載入的技能 — 目前顯示完整目錄。',
+  skillsProfileUnknown: profile =>
+    `「${profile}」不是已安裝的設定檔 — 顯示完整目錄。工作單元將退回調度器自身的設定檔。`,
+  skillsMissingWarn: (profile, ids) =>
+    `${profile} 無法使用：${ids}。已保留在卡片上並標記 — 請移除，或指派擁有它們的設定檔。`,
+  skillNotAvailable: profile => `${profile} 無法使用 — 工作單元不會載入。`,
   parent: '父任務（完成前會阻擋）',
   noParent: '— 無父任務 —',
   goalMode: '目標模式（工作單元循環直到評判代理認可完成）',

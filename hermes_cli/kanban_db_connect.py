@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import random
 import re
 import secrets
@@ -935,6 +936,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 _add_column_if_missing(conn, "task_runs", name, ddl)
         _backfill_legacy_inflight_runs(conn)
 
+    # After the add pass, so ``skills`` is guaranteed to exist on a v1 board.
+    _migrate_legacy_skills_column(conn)
+
     # One-shot event-kind rename: old names still worked but were awkward on
     # the wire. Fires once per DB — after the UPDATE no rows match.
     for old, new in (
@@ -995,6 +999,43 @@ def _backfill_legacy_inflight_runs(conn: sqlite3.Connection) -> None:
                     "WHERE id = ?",
                     (int(time.time()), cur.lastrowid),
                 )
+
+
+def _migrate_legacy_skills_column(conn: sqlite3.Connection) -> int:
+    """One-shot: rewrite ``tasks.skills`` values into the canonical JSON array.
+
+    Cards used to store skills as a comma-separated string; the column is now a
+    JSON array of skill ids. A legacy value fails to JSON-decode, which dropped
+    every skill on that card, so each value is decoded (or taken verbatim when
+    it isn't JSON), normalized through ``kanban_db.normalize_skills`` — split on
+    commas, trimmed, de-duplicated, blanks dropped — and written back only when
+    the canonical form differs. A value that yields no names becomes NULL
+    ("not set"), so no empty entries survive.
+
+    Idempotent and cheap on a migrated board: a second run finds nothing to
+    write and returns 0. Returns the number of rows rewritten (tests assert on
+    it — nothing else consumes the count).
+    """
+    if "skills" not in _column_names(conn, "tasks"):
+        return 0
+    rows = conn.execute(
+        "SELECT id, skills FROM tasks WHERE skills IS NOT NULL"
+    ).fetchall()
+    updates: list[tuple[Optional[str], str]] = []
+    for row in rows:
+        raw = row["skills"]
+        with contextlib.suppress(Exception):
+            # A JSON scalar string (``"a, b"``) decodes to the legacy text.
+            raw = json.loads(raw)
+        names = _kb.normalize_skills(raw)
+        canonical = json.dumps(names) if names else None
+        if canonical != row["skills"]:
+            updates.append((canonical, row["id"]))
+    if not updates:
+        return 0
+    with write_txn(conn):
+        conn.executemany("UPDATE tasks SET skills = ? WHERE id = ?", updates)
+    return len(updates)
 
 
 # Legacy DBs used a ``TEXT PRIMARY KEY`` id (nullable ``TEXT last_event_id``

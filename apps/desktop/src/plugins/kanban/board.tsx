@@ -85,6 +85,7 @@ import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
 import { EMPTY_OVERRIDE, ModelOverrideField, overrideCreateFields, type TaskModelOverride } from './model-override'
 import { OrchestrationPanel } from './orchestration'
+import { SkillPicker } from './skills-picker'
 import { columnMeta, type KanbanBoard, type KanbanTask, type TaskEstimate } from './types'
 import {
   $newTaskLane,
@@ -567,7 +568,7 @@ function NewTaskDialog({
   const [bodyText, setBodyText] = useState('')
   const [assignee, setAssignee] = useState('')
   const [priority, setPriority] = useState('0')
-  const [skills, setSkills] = useState('')
+  const [skills, setSkills] = useState<string[]>([])
   const [workspaceKind, setWorkspaceKind] = useState<string>(boardDefaultKind)
   // Empty = inherit the board's default project dir (backend resolves it);
   // a path here overrides just this task. Only meaningful for dir/worktree.
@@ -602,7 +603,7 @@ function NewTaskDialog({
       setBodyText('')
       setAssignee('')
       setPriority('0')
-      setSkills('')
+      setSkills([])
       setWorkspaceKind(boardDefaultKind)
       setWorkspacePath('')
       setParent('')
@@ -625,11 +626,6 @@ function NewTaskDialog({
     setError(null)
 
     try {
-      const skillList = skills
-        .split(',')
-        .map(s => s.trim())
-        .filter(Boolean)
-
       // create() derives status (triage flag → 'triage', else 'ready'); move to
       // the requested column when they differ, so a per-column add lands right.
       const { task, warning } = await createTask({
@@ -638,7 +634,7 @@ function NewTaskDialog({
         goal_mode: goalMode,
         parents: parent ? [parent] : undefined,
         priority: Number(priority) || 0,
-        skills: skillList.length ? skillList : undefined,
+        skills: skills.length ? skills : undefined,
         title: trimmed,
         triage: isTriage,
         workspace_kind: workspaceKind,
@@ -753,7 +749,12 @@ function NewTaskDialog({
           </Field>
 
           <Field label={k.skills}>
-            <Input onChange={event => setSkills(event.target.value)} placeholder={k.skillsPlaceholder} value={skills} />
+            <SkillPicker
+              onChange={setSkills}
+              profile={assignee === PARKED ? '' : assignee || resolvedDefault}
+              value={skills}
+            />
+            <span className="text-[0.625rem] text-(--ui-text-quaternary)">{k.skillsHint}</span>
           </Field>
 
           <Field label={k.model}>

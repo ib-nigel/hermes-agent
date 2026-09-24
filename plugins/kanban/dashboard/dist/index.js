@@ -3293,7 +3293,9 @@
     const [assignee, setAssignee] = useState("");
     const [priority, setPriority] = useState(0);
     const [parent, setParent] = useState("");
-    const [skills, setSkills] = useState("");
+    // Selected skill ids (the array shape the card stores). The picker's
+    // options come from the assignee's own profile — see SkillsPicker.
+    const [skills, setSkills] = useState([]);
     // A board with a configured workdir defaults to a persistent workspace:
     // worktree for git repositories, dir for ordinary directories. Boards
     // without one keep scratch for disposable research and ops tasks.
@@ -3319,14 +3321,11 @@
         triage: props.columnName === "triage",
       };
       if (parent) body.parents = [parent];
-      // Parse comma-separated skills into a clean list. Blank = no
-      // extras (omit key so backend leaves it null). The dispatcher
-      // always auto-loads kanban-worker; these are extras on top.
-      const skillList = skills
-        .split(",")
-        .map(function (s) { return s.trim(); })
-        .filter(function (s) { return s.length > 0; });
-      if (skillList.length > 0) body.skills = skillList;
+      // Skills are picked from the assignee's applicable set (SkillsPicker)
+      // and submitted as the array the card stores. Empty = no extras
+      // (omit the key so the backend leaves it null). The dispatcher always
+      // auto-loads kanban-worker; these are extras on top.
+      if (skills.length > 0) body.skills = skills.slice();
       // Only send workspace_kind when it's non-default. Keeps the request
       // shape small and interoperable with older dispatcher versions.
       if (workspaceKind && workspaceKind !== "scratch") {
@@ -3342,7 +3341,7 @@
         if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
       props.onSubmit(body);
-      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
+      setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills([]);
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
       setGoalMode(false); setGoalMaxTurns("");
     };
@@ -3423,14 +3422,15 @@
           ),
           h("div", { className: "flex flex-col gap-1" },
             fieldLabel(tx(t, "skillsLabel", "Skills"),
-              tx(t, "skillsLabelHint", "(optional, comma-separated)")),
-            h(Input, {
+              tx(t, "skillsLabelHint",
+                "(optional — picked from the assignee's applicable skills)")),
+            h(SkillsPicker, {
+              profile: assignee.trim(),
               value: skills,
-              onChange: function (e) { setSkills(e.target.value); },
-              placeholder: tx(t, "skillsPlaceholder",
-                "skills (optional, comma-separated): translation, github-code-review"),
-              title: "Force-load these skills into the worker (in addition to the built-in kanban-worker).",
-              className: "h-8 text-sm",
+              onChange: setSkills,
+              // The profile is a text field here: wait for typing to settle
+              // before asking the catalog API for its options.
+              debounceMs: 400,
             }),
           ),
           h("div", { className: "flex flex-col gap-1" },
@@ -3812,6 +3812,14 @@
             title: tx(t, "close", "Close (Esc)"),
           }, "×"),
         ),
+        // Rejected PATCHes (e.g. a skills entry the API refuses) carry the
+        // reason in `detail` — show it instead of letting the click look
+        // like a no-op. Cleared on the next successful patch/refresh.
+        patchErr ? h("div", {
+          className: "hermes-kanban-drawer-patch-err",
+          role: "alert",
+          "data-testid": "kanban-patch-error",
+        }, patchErr) : null,
         loading ? h("div", { className: "p-4 text-sm text-muted-foreground" },
           tx(t, "loadingDetail", "Loading…")) :
         err ? h("div", { className: "p-4 text-sm text-destructive" }, err) :
@@ -4028,10 +4036,7 @@
           label: tx(i18n, "workspace", "Workspace"),
           value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
         }),
-        (t.skills && t.skills.length > 0) ? h(MetaRow, {
-          label: tx(i18n, "skills", "Skills"),
-          value: t.skills.join(", "),
-        }) : null,
+        h(SkillsEditor, { task: t, onPatch: props.onPatch }),
         t.goal_mode ? h(MetaRow, {
           label: tx(i18n, "goalMode", "Goal mode"),
           value: t.goal_max_turns
@@ -4324,6 +4329,376 @@
             data.path,
             tx(t, "logAt", ")"))
         : null,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Profile-aware skills multi-select (create dialog + task drawer)
+  //
+  // A card's `skills` entries become `--skills <name>` flags on the worker
+  // that runs the card, so the picker's options must be the skills the
+  // SELECTED profile can actually load:
+  //
+  //   GET /skills?profile=<assignee>
+  //     known profile   -> that profile's applicable skills (normal path)
+  //     unknown profile -> the FULL catalog with `resolved: false` (a warning,
+  //                        never an error, never an empty control)
+  //     blank profile   -> the full catalog, `resolved: true`
+  //
+  // A profile change reconciles the current selection instead of silently
+  // dropping it: an id the new option list doesn't offer is KEPT and flagged
+  // ("not available for <profile>") so an operator can see that the newly
+  // selected worker would never load it.
+  // -------------------------------------------------------------------------
+
+  // profile ("" = catalog scope) -> {at, promise}. Skill rows change rarely,
+  // so a short TTL keeps profile switches cheap and repeated drawer opens
+  // free; a FAILED fetch is not cached (retry on the next open).
+  const SKILLS_TTL_MS = 30000;
+  const skillsCache = {};
+
+  function fetchSkillsCatalog(profile, force) {
+    const key = profile || "";
+    const hit = skillsCache[key];
+    const now = Date.now();
+    if (!force && hit && now - hit.at < SKILLS_TTL_MS) {
+      return hit.promise;
+    }
+    const url = key
+      ? `${API}/skills?profile=${encodeURIComponent(key)}`
+      : `${API}/skills`;
+    const entry = {
+      at: now,
+      promise: SDK.fetchJSON(url).then(function (data) {
+        if (!data || !Array.isArray(data.skills)) {
+          return { skills: [], count: 0, resolved: true, scope: "catalog", profile: null };
+        }
+        return data;
+      }),
+    };
+    skillsCache[key] = entry;
+    entry.promise.catch(function () {
+      if (skillsCache[key] === entry) delete skillsCache[key];
+    });
+    return entry.promise;
+  }
+
+  // Load the option list for a profile and refetch whenever it changes.
+  // `debounceMs` matters for the create dialog, where the profile is typed:
+  // without it every keystroke would be a catalog request. State carries the
+  // profile it describes, so a render that lands between a profile change and
+  // the (debounced) fetch reports `loading` instead of the OLD profile's
+  // options — the picker must never show (or flag against) another profile's
+  // list.
+  function useSkillsCatalog(profile, debounceMs) {
+    const wanted = profile || "";
+    const [state, setState] = useState({
+      profile: wanted, status: "loading", data: null, error: null,
+    });
+    const [nonce, setNonce] = useState(0);
+    useEffect(function () {
+      let alive = true;
+      const settle = function (next) {
+        if (alive) setState(Object.assign({ profile: wanted }, next));
+      };
+      const run = function () {
+        settle({ status: "loading", data: null, error: null });
+        fetchSkillsCatalog(wanted).then(function (data) {
+          settle({ status: "ready", data: data, error: null });
+        }, function (err) {
+          settle({ status: "error", data: null, error: parseApiErrorMessage(err) });
+        });
+      };
+      if (!debounceMs) {
+        run();
+        return function () { alive = false; };
+      }
+      const timer = setTimeout(run, debounceMs);
+      return function () { alive = false; clearTimeout(timer); };
+    }, [wanted, nonce, debounceMs]);
+    const fresh = state.profile === wanted;
+    return {
+      status: fresh ? state.status : "loading",
+      data: fresh ? state.data : null,
+      error: fresh ? state.error : null,
+      reload: function () { setNonce(function (n) { return n + 1; }); },
+    };
+  }
+
+  // Split a selection into the ids the option list offers and the ones it
+  // doesn't. `data === null` (loading, failed, or stale profile) flags
+  // NOTHING: a false "not available" warning is worse than none.
+  function reconcileSkills(selected, data) {
+    const ids = selected || [];
+    if (!data) return { known: ids.slice(), missing: [] };
+    const offered = {};
+    data.skills.forEach(function (s) { offered[s.id] = true; });
+    const known = [], missing = [];
+    ids.forEach(function (id) { (offered[id] ? known : missing).push(id); });
+    return { known: known, missing: missing };
+  }
+
+  function SkillChip(props) {
+    const missing = !!props.missing;
+    return h("span", {
+      className: cn("hermes-kanban-skill-chip",
+        missing && "hermes-kanban-skill-chip--missing"),
+      title: missing
+        ? tx(props.t, "skillNotAvailable",
+            "Not available to {profile} — the worker would not load it.",
+            { profile: props.profile || tx(props.t, "noProfile", "no profile") })
+        : (props.description || props.id),
+    },
+      missing ? h("span", { className: "hermes-kanban-skill-chip-flag",
+        "aria-hidden": "true" }, "!") : null,
+      h("span", { className: "hermes-kanban-skill-chip-label" },
+        props.label || props.id),
+      props.onRemove ? h("button", {
+        type: "button",
+        className: "hermes-kanban-skill-chip-x",
+        title: tx(props.t, "removeSkill", "Remove"),
+        onClick: function (e) {
+          e.preventDefault();
+          e.stopPropagation();
+          props.onRemove();
+        },
+      }, "×") : null,
+    );
+  }
+
+  // The control itself: chips for the current selection, a search box, and
+  // the profile's option list. Owns loading / empty / error / unresolved-
+  // profile states; the parent owns the value.
+  function SkillsPicker(props) {
+    const { t } = useI18n();
+    const profile = props.profile || "";
+    const catalog = useSkillsCatalog(profile, props.debounceMs);
+    const [query, setQuery] = useState("");
+    const selected = props.value || [];
+    const rec = reconcileSkills(selected, catalog.data);
+    const byId = {};
+    if (catalog.data) {
+      catalog.data.skills.forEach(function (s) { byId[s.id] = s; });
+    }
+    const setSkill = function (id, on) {
+      const has = selected.indexOf(id) >= 0;
+      if (on === has) return;
+      props.onChange(on
+        ? selected.concat([id])
+        : selected.filter(function (s) { return s !== id; }));
+    };
+
+    const q = query.trim().toLowerCase();
+    const options = catalog.data ? catalog.data.skills : [];
+    const filtered = q
+      ? options.filter(function (s) {
+          return (s.id + " " + (s.label || "") + " " + (s.category || "") + " "
+            + (s.description || "")).toLowerCase().indexOf(q) >= 0;
+        })
+      : options;
+    // The full catalog is ~190 rows; render a bounded slice and say so.
+    const MAX_ROWS = 60;
+    const rows = filtered.slice(0, MAX_ROWS);
+    const unresolved = !!(profile && catalog.data && catalog.data.resolved === false);
+
+    return h("div", { className: "hermes-kanban-skill-picker" },
+      h("div", { className: "hermes-kanban-skill-chips" },
+        selected.length === 0
+          ? h("span", { className: "hermes-kanban-skill-none" },
+              tx(t, "skillsNoneSelected",
+                "No extra skills — the worker loads only its built-in kanban-worker."))
+          : selected.map(function (id) {
+              const opt = byId[id];
+              const missing = rec.missing.indexOf(id) >= 0;
+              return h(SkillChip, {
+                key: id,
+                t: t,
+                id: id,
+                label: (opt && opt.label) || id,
+                description: opt && opt.description,
+                missing: missing,
+                profile: profile,
+                onRemove: function () { setSkill(id, false); },
+              });
+            }),
+      ),
+      h("div", {
+        className: cn("hermes-kanban-skill-scope",
+          unresolved && "hermes-kanban-skill-scope--warn"),
+        role: "status",
+      },
+        catalog.status === "loading"
+          ? tx(t, "skillsLoading", "Loading skills…")
+          : catalog.status === "error"
+            ? null
+            : unresolved
+              ? tx(t, "skillsProfileUnknown",
+                  "“{profile}” is not an installed profile — showing the full catalog. The worker would fall back to the dispatcher's own profile.",
+                  { profile: profile })
+              : profile
+                ? tx(t, "skillsScopeProfile",
+                    "Only skills applicable to {profile} are listed.",
+                    { profile: profile })
+                : tx(t, "skillsScopeCatalog",
+                    "Assign a profile to narrow this list to the skills that profile can load — showing the full catalog."),
+      ),
+      catalog.status === "error" ? h("div", {
+        className: "hermes-kanban-skill-error",
+        role: "alert",
+      },
+        tx(t, "skillsLoadFailed", "Could not load skills") + " — "
+          + (catalog.error || "") + " ",
+        h(Button, {
+          type: "button",
+          size: "sm",
+          className: "h-6 text-xs",
+          onClick: catalog.reload,
+        }, tx(t, "retry", "Retry")),
+      ) : null,
+      rec.missing.length > 0 ? h("div", {
+        className: "hermes-kanban-skill-warn",
+        role: "alert",
+      },
+        tx(t, "skillsMissingWarn",
+          "Not available to {profile}: {ids}. Kept on the card and flagged — remove them, or assign a profile that has them.",
+          {
+            profile: profile || tx(t, "noProfile", "no profile"),
+            ids: rec.missing.join(", "),
+          }),
+      ) : null,
+      h(Input, {
+        value: query,
+        onChange: function (e) { setQuery(e.target.value); },
+        placeholder: tx(t, "skillsSearch", "Search skills…"),
+        className: "h-8 text-sm",
+        style: { textTransform: "none" },
+        autoCapitalize: "none",
+        autoCorrect: "off",
+        spellCheck: false,
+      }),
+      catalog.status === "loading"
+        ? h("div", { className: "hermes-kanban-skill-empty" },
+            tx(t, "skillsLoadingRows", "Loading skills…"))
+        : catalog.status === "error"
+          ? null
+          : filtered.length === 0
+            ? h("div", { className: "hermes-kanban-skill-empty" },
+                options.length === 0
+                  ? tx(t, "skillsNoneForProfile",
+                      "This profile has no applicable skills.")
+                  : tx(t, "skillsNoMatch", "No skills match “{q}”.", { q: query.trim() }))
+            : h("div", { className: "hermes-kanban-skill-list" },
+                rows.map(function (s) {
+                  const on = selected.indexOf(s.id) >= 0;
+                  return h("label", {
+                    key: s.id,
+                    className: cn("hermes-kanban-skill-opt",
+                      on && "hermes-kanban-skill-opt--on"),
+                    title: s.description || s.id,
+                  },
+                    h(Checkbox, {
+                      checked: on,
+                      onCheckedChange: function (next) { setSkill(s.id, !!next); },
+                      className: "h-3.5 w-3.5",
+                    }),
+                    h("span", { className: "hermes-kanban-skill-opt-id" },
+                      s.label || s.id),
+                    s.category ? h("span", { className: "hermes-kanban-skill-opt-cat" },
+                      s.category) : null,
+                  );
+                }),
+                filtered.length > rows.length ? h("div", {
+                  className: "hermes-kanban-skill-empty",
+                },
+                  tx(t, "skillsTruncated",
+                    "Showing {n} of {total} matches — refine the search.",
+                    { n: rows.length, total: filtered.length })) : null,
+              ),
+    );
+  }
+
+  // The drawer's Skills row. Idle: chips (flagged when the card's CURRENT
+  // assignee can't load one). Editing: the picker, saved as an array via the
+  // same PATCH path the other editors use, so a rejected value surfaces in
+  // the drawer's error banner instead of being swallowed.
+  function SkillsEditor(props) {
+    const { t } = useI18n();
+    const task = props.task;
+    const profile = task.assignee || "";
+    const [editing, setEditing] = useState(false);
+    const [draft, setDraft] = useState(task.skills || []);
+    const catalog = useSkillsCatalog(profile, 0);
+    useEffect(function () {
+      setDraft(task.skills || []);
+      setEditing(false);
+    }, [task.id, task.skills]);
+    const byId = {};
+    if (catalog.data) {
+      catalog.data.skills.forEach(function (s) { byId[s.id] = s; });
+    }
+    const rec = reconcileSkills(task.skills || [], catalog.data);
+
+    if (!editing) {
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, tx(t, "skills", "Skills")),
+        h("span", {
+          className: "hermes-kanban-meta-value hermes-kanban-editable hermes-kanban-skill-chips",
+          title: tx(t, "clickToEditSkills", "Click to edit skills"),
+          "data-testid": "kanban-skills-value",
+          onClick: function () { setEditing(true); },
+        },
+          (task.skills || []).length === 0
+            ? tx(t, "skillsNone", "(none)")
+            : task.skills.map(function (id) {
+                const opt = byId[id];
+                const missing = rec.missing.indexOf(id) >= 0;
+                return h(SkillChip, {
+                  key: id, t: t, id: id,
+                  label: (opt && opt.label) || id,
+                  description: opt && opt.description,
+                  missing: missing,
+                  profile: profile,
+                });
+              }),
+        ),
+      );
+    }
+
+    const save = function () {
+      props.onPatch({ skills: draft.slice() }).then(function () {
+        setEditing(false);
+      });
+    };
+
+    return h("div", {
+      className: "hermes-kanban-meta-row hermes-kanban-skill-editor",
+      "data-testid": "kanban-skills-editor",
+    },
+      h("span", { className: "hermes-kanban-meta-label" }, tx(t, "skills", "Skills")),
+      h("span", { className: "hermes-kanban-skill-editor-body" },
+        h(SkillsPicker, {
+          profile: profile,
+          value: draft,
+          onChange: setDraft,
+        }),
+        h("span", { className: "hermes-kanban-skill-editor-actions" },
+          h(Button, {
+            type: "button",
+            size: "sm",
+            disabled: draft.slice().sort().join(",")
+              === (task.skills || []).slice().sort().join(","),
+            onClick: save,
+          }, tx(t, "save", "Save")),
+          h(Button, {
+            type: "button",
+            size: "sm",
+            onClick: function () {
+              setDraft(task.skills || []);
+              setEditing(false);
+            },
+          }, tx(t, "cancel", "Cancel")),
+        ),
+      ),
     );
   }
 

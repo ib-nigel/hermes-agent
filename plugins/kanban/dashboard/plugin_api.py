@@ -21,14 +21,15 @@ from contextlib import closing, contextmanager
 from dataclasses import asdict
 from functools import partial
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional
+from typing import Annotated, Any, Callable, Iterator, Optional
 
 from fastapi import (
     APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status)
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 from hermes_cli import kanban_db
+from hermes_cli import skills_catalog
 from hermes_cli.web_read_coalescing import coalesced_read
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -174,6 +175,9 @@ _CARD_SUMMARY_PREVIEW_CHARS = 200
 def _task_dict(task: kanban_db.Task, *, latest_summary: Optional[str] = None,
                current_run_started_at: Optional[int] = None) -> dict[str, Any]:
     d = asdict(task)
+    # Skills are always emitted as an array (never null) so a client can rely on
+    # the shape: a card with no forced-load skills has [].
+    d["skills"] = list(d.get("skills") or [])
     # Derived age metrics so the UI can colour stale cards without client deltas.
     try:
         d["age"] = kanban_db.task_age(task)
@@ -399,6 +403,13 @@ def get_task(
 
 # --- POST /tasks ------------------------------------------------------------
 
+# ``skills`` on a card body. The stored/returned shape is a JSON array of skill
+# ids; the ``BeforeValidator`` also accepts the pre-migration wire format (one
+# comma-separated string) so clients written before the array change keep
+# working — they are normalized, never 422'd.
+SkillsField = Annotated[Optional[list[str]], BeforeValidator(kanban_db.normalize_skills)]
+
+
 class CreateTaskBody(BaseModel):
     title: str
     body: Optional[str] = None
@@ -411,7 +422,7 @@ class CreateTaskBody(BaseModel):
     triage: bool = False
     idempotency_key: Optional[str] = None
     max_runtime_seconds: Optional[int] = None
-    skills: Optional[list[str]] = None
+    skills: SkillsField = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
     model_override: Optional[str] = None
@@ -537,6 +548,10 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Forced-load skills as an array of ids (legacy comma-separated string also
+    # accepted). ``None`` = field not sent, leave the card's skills alone;
+    # ``[]`` = explicitly no extra skills.
+    skills: SkillsField = None
 
 
 class BulkTaskBody(BaseModel):
@@ -698,6 +713,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
             _set_priority(conn, task_id, payload.priority, board)
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
+        if payload.skills is not None:
+            with _map_errors(400, ValueError):
+                _require_ok(kanban_db.edit_task(conn, task_id, skills=payload.skills, board=board))
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(
             updated, current_run_started_at=kanban_db.current_run_started_ats(conn, [task_id]).get(task_id)
@@ -1238,6 +1256,26 @@ def get_assignees(board: Optional[str] = Query(None)):
     profile appears in the picker before it has any task."""
     with _board_conn(board) as (board, conn):
         return {"assignees": kanban_db.known_assignees(conn)}
+
+
+# --- Skills catalog — which skills the selected assignee can actually load ----
+# A card's ``skills`` entries become ``--skills <name>`` flags on a worker that runs under
+# ``-p <assignee>``, so the picker's options must be the skills THAT profile can load.
+# Response shape + the unknown/missing-profile fallback are documented in
+# ``hermes_cli.skills_catalog`` (module docstring) — that module is the single source of truth.
+
+@router.get("/skills")
+def get_skills_catalog(
+    profile: Optional[str] = Query(
+        None, description="Assignee/profile name; omit (or pass an unknown name) for the full catalog")):
+    """``{scope, profile, requested_profile, resolved, profiles, count, skills:[{id,label,...}]}``.
+
+    ``?profile=<known>`` -> that profile's applicable skills. An unknown/blank profile is NOT
+    an error: it falls back to the full catalog with ``resolved: false``, so a renamed profile
+    empties no picker.
+    """
+    with _errors_to_500("failed to build skills catalog"):
+        return skills_catalog.build_catalog(profile)
 
 
 @router.get("/tasks/{task_id}/log")

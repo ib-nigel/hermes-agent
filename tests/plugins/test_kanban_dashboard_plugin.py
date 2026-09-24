@@ -825,7 +825,92 @@ def test_event_dict_includes_run_id(client):
 
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills via REST
+#
+# The card's ``skills`` field is a JSON array of skill ids. Clients written
+# before that change send one comma-separated string; both shapes must be
+# accepted and the response must always carry an array.
 # ---------------------------------------------------------------------------
+
+
+def _create_card(client, **fields):
+    r = client.post("/api/plugins/kanban/tasks", json={"title": "skills card", **fields})
+    assert r.status_code == 200, r.text
+    return r.json()["task"]
+
+
+def test_create_accepts_an_array_and_returns_an_array(client):
+    task = _create_card(client, skills=["labfinder-verify-cli", "test-driven-development"])
+    assert task["skills"] == ["labfinder-verify-cli", "test-driven-development"]
+    # ...and the shape on disk is a JSON array.
+    with kbc.connect_closing() as conn:
+        stored = conn.execute("SELECT skills FROM tasks WHERE id = ?", (task["id"],)).fetchone()[0]
+    assert json.loads(stored) == ["labfinder-verify-cli", "test-driven-development"]
+
+
+def test_create_accepts_the_legacy_comma_separated_string(client):
+    task = _create_card(client, skills="labfinder-verify-cli, test-driven-development")
+    assert task["skills"] == ["labfinder-verify-cli", "test-driven-development"]
+
+
+def test_cards_without_skills_return_an_empty_array(client):
+    task = _create_card(client)
+    assert task["skills"] == []
+    fetched = client.get(f"/api/plugins/kanban/tasks/{task['id']}").json()["task"]
+    assert fetched["skills"] == []
+    board = client.get("/api/plugins/kanban/board").json()
+    cards = [t for col in board["columns"] for t in col["tasks"]]
+    assert [t for t in cards if t["id"] == task["id"]][0]["skills"] == []
+
+
+def test_patch_replaces_skills_accepts_legacy_string_and_leaves_them_alone(client):
+    task = _create_card(client, skills=["old-skill"])
+    tid = task["id"]
+
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"skills": ["a", "b"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["skills"] == ["a", "b"]
+
+    # Legacy string on the update path, trimmed and de-duplicated.
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"skills": " b , c , b "})
+    assert r.json()["task"]["skills"] == ["b", "c"]
+
+    # A patch that doesn't mention skills must not touch them.
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"priority": 3})
+    assert r.json()["task"]["skills"] == ["b", "c"]
+
+    # Explicit clear is an empty array, not null.
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"skills": []})
+    assert r.json()["task"]["skills"] == []
+    with kbc.connect_closing() as conn:
+        assert conn.execute("SELECT skills FROM tasks WHERE id = ?", (tid,)).fetchone()[0] == "[]"
+
+
+def test_legacy_comma_row_is_migrated_and_served_as_an_array(client, kanban_home):
+    task = _create_card(client, skills=["placeholder"])
+    tid = task["id"]
+    # Recreate a pre-array row, then let the migration pass in connect() run.
+    with kbc.connect_closing() as conn:
+        conn.execute(
+            "UPDATE tasks SET skills = ? WHERE id = ?",
+            ("hermes-agent, test-driven-development", tid),
+        )
+        conn.commit()
+    kb.init_db()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{tid}")
+    assert r.status_code == 200
+    assert r.json()["task"]["skills"] == ["hermes-agent", "test-driven-development"]
+
+
+def test_unknown_skill_name_still_surfaces_as_400(client):
+    """A toolset name is refused by the domain layer, mapped to a 400 — the UI
+    has something actionable to show rather than a 500."""
+    r = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "bad skill", "skills": ["web"]},
+    )
+    assert r.status_code == 400
+    assert "toolset" in r.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher-presence warning in POST /tasks response

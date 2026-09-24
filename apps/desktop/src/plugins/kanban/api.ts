@@ -40,6 +40,7 @@ import type {
   KanbanTask,
   KanbanTaskDetail,
   OrchestrationSettings,
+  SkillsCatalog,
   TaskEstimate,
   WorkerLog
 } from './types'
@@ -352,6 +353,11 @@ export const profilesKey = (scope: string) => ['kanban', 'profiles', scope] as c
 export const projectsKey = (scope: string) => ['kanban', 'projects', scope] as const
 export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', scope] as const
 
+/** Skills catalog, keyed by the profile it was resolved for ('' = the full
+ *  catalog). The assignee decides what a card's worker can load, so the key
+ *  carries the profile — a reassign is a different list, never a stale one. */
+export const skillsKey = (profile: string) => ['kanban', 'skills', profile] as const
+
 // ── reads ─────────────────────────────────────────────────────────────────────
 
 export const fetchBoard = (archived: boolean) =>
@@ -375,6 +381,13 @@ export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profile
 export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')
 
 export const fetchOrchestration = () => call<OrchestrationSettings>('/orchestration')
+
+/** The skills the selected assignee's worker can load (GET /skills). An empty
+ *  profile asks for the FULL catalog; an unknown one degrades to the same
+ *  catalog with `resolved: false` instead of erroring (see
+ *  `hermes_cli/skills_catalog.py`). Board-independent, so no `?board=`. */
+export const fetchSkills = (profile?: string) =>
+  call<SkillsCatalog>(profile ? `/skills?profile=${encodeURIComponent(profile)}` : '/skills')
 
 // ── writes ────────────────────────────────────────────────────────────────────
 

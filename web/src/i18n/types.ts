@@ -892,6 +892,21 @@ export interface Translations {
     assigneeLabelHint?: string;
     skillsLabel?: string;
     skillsLabelHint?: string;
+    // Profile-aware skills multi-select (card create dialog + task drawer).
+    skillsSearch?: string;
+    skillsNoneSelected?: string;
+    skillsNone?: string;
+    skillsScopeProfile?: string;
+    skillsScopeCatalog?: string;
+    skillsProfileUnknown?: string;
+    skillsLoadingRows?: string;
+    skillsLoadFailed?: string;
+    skillsNoneForProfile?: string;
+    skillsNoMatch?: string;
+    skillsTruncated?: string;
+    skillsMissingWarn?: string;
+    skillNotAvailable?: string;
+    clickToEditSkills?: string;
     parentLabel?: string;
     parentLabelHint?: string;
     create?: string;

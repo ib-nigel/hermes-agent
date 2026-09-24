@@ -57,6 +57,7 @@ import {
   useKanbanScope
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
+import { SkillPicker } from './skills-picker'
 import {
   type Diagnostic,
   type DiagnosticAction,
@@ -1084,6 +1085,17 @@ export function TaskDrawer({
                   <AssigneeMenu
                     current={task.assignee}
                     onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
+                  />
+                </MetaRow>
+                <MetaRow label={k.skills}>
+                  {/* The assignee decides which skills the worker can load, so the
+                      picker offers exactly those and flags ids the current
+                      assignee cannot load. An older backend that still answers a
+                      comma-separated string normalizes to [] here. */}
+                  <SkillPicker
+                    onChange={next => void mutate(() => patchTask(task.id, { skills: next }))()}
+                    profile={task.assignee ?? ''}
+                    value={Array.isArray(task.skills) ? task.skills : []}
                   />
                 </MetaRow>
                 {typeof task.priority === 'number' && (

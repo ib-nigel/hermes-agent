@@ -898,7 +898,29 @@ export const en: Translations = {
     assigneeLabel: "Assignee",
     assigneeLabelHint: "(blank = dispatcher picks)",
     skillsLabel: "Skills",
-    skillsLabelHint: "(optional, comma-separated)",
+    skillsLabelHint: "(optional — picked from the assignee's applicable skills)",
+    // Profile-aware skills multi-select (card create dialog + task drawer).
+    // Keys are optional so non-English locales fall back to the bundle's
+    // English literals instead of churning every locale file.
+    skillsSearch: "Search skills…",
+    skillsNoneSelected:
+      "No extra skills — the worker loads only its built-in kanban-worker.",
+    skillsNone: "(none)",
+    skillsScopeProfile: "Only skills applicable to {profile} are listed.",
+    skillsScopeCatalog:
+      "Assign a profile to narrow this list to the skills that profile can load — showing the full catalog.",
+    skillsProfileUnknown:
+      "“{profile}” is not an installed profile — showing the full catalog. The worker would fall back to the dispatcher's own profile.",
+    skillsLoadingRows: "Loading skills…",
+    skillsLoadFailed: "Could not load skills",
+    skillsNoneForProfile: "This profile has no applicable skills.",
+    skillsNoMatch: "No skills match “{q}”.",
+    skillsTruncated: "Showing {n} of {total} matches — refine the search.",
+    skillsMissingWarn:
+      "Not available to {profile}: {ids}. Kept on the card and flagged — remove them, or assign a profile that has them.",
+    skillNotAvailable:
+      "Not available to {profile} — the worker would not load it.",
+    clickToEditSkills: "Click to edit skills",
     parentLabel: "Parent task",
     parentLabelHint: "(child stays blocked until the parent is done)",
     create: "Create",

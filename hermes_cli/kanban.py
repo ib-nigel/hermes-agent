@@ -950,17 +950,20 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     title = getattr(args, "title", None)
     body = getattr(args, "body", None)
     priority = getattr(args, "priority", None)
+    # No --skill flag -> leave the card's skills untouched (same convention as
+    # the other edit fields); repeated flags -> the replacement list.
+    skills = getattr(args, "skills", None) or None
     if result is None and (summary is not None or raw_metadata is not None):
         return _err("kanban edit: --summary and --metadata require --result", 2)
-    if all(value is None for value in (title, body, priority, result)):
-        return _err("kanban edit: provide --title, --body, --priority, or --result", 2)
+    if all(value is None for value in (title, body, priority, result, skills)):
+        return _err("kanban edit: provide --title, --body, --priority, --skill, or --result", 2)
     metadata, rc = _parse_metadata_flag(raw_metadata)
     if rc:
         return rc
     with kbc.connect_closing() as conn:
         ok = kb.edit_task(
             conn, args.task_id, title=title, body=body, priority=priority,
-            result=result, summary=summary, metadata=metadata,
+            result=result, summary=summary, metadata=metadata, skills=skills,
         )
     return _ok_or_err(
         ok,

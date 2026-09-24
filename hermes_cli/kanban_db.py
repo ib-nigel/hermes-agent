@@ -742,8 +742,12 @@ class Task:
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _lossy_text(_row_get(row, col, default))  # noqa: E731
-        parsed = _json_or(g("skills"))
-        skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        # Tolerate the pre-array column shape: ``skills`` holds a JSON array on
+        # every row written since the migration, but a legacy row still carries
+        # a comma-separated string (and a JSON decode of it would fail and drop
+        # the skills entirely). ``normalize_skills`` handles both, so a read is
+        # correct even before the one-shot rewrite in ``kanban_db_connect``.
+        skills_value = normalize_skills(_json_or(g("skills"), g("skills")))
         return cls(
             **{col: _lossy_text(row[col]) for col in _TASK_REQUIRED_COLUMNS},
             **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
@@ -1212,33 +1216,58 @@ def _project_from_source_task(
     return project_obj, project_repo
 
 
-def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
-    """Strip/dedupe a skills list. Commas are refused (a comma-joined string must
-    not land in one argv slot); toolset names are rejected all at once because
-    agents that confuse the two usually pass several."""
+def normalize_skills(skills: Any) -> Optional[list[str]]:
+    """Coerce a card's ``skills`` value into a clean list of skill ids.
+
+    The canonical stored shape is a JSON array (``["a", "b"]``). This is the one
+    place that also understands the legacy comma-separated string (``"a, b"``),
+    so a row written before the array migration — or a client still sending the
+    old shape — never loses or duplicates a skill. Names are stringified,
+    stripped, and de-duplicated (first occurrence wins); blanks are dropped.
+
+    ``None`` or a blank string means "not set" -> ``None``. An empty list means
+    "explicitly none" -> ``[]``. Never raises: this is the read/migration path.
+    """
     if skills is None:
         return None
+    if isinstance(skills, str):
+        # Legacy wire/storage format: one comma-joined string.
+        if not skills.strip():
+            return None
+        parts: Iterable[Any] = skills.split(",")
+    elif isinstance(skills, (list, tuple)):
+        parts = skills
+    else:
+        # A lone non-string scalar is one name, not an iterable of characters.
+        parts = (skills,)
     cleaned: list[str] = []
     seen: set[str] = set()
-    toolset_typos: list[str] = []
-    for s in skills:
-        if not s:
+    for s in parts:
+        if s is None:
             continue
-        name = str(s).strip()
-        if not name:
-            continue
-        if "," in name:
-            raise ValueError(
-                f"skill name cannot contain comma: {name!r} "
-                f"(pass a list of separate names instead of a comma-joined string)"
-            )
-        if name.casefold() in KNOWN_TOOLSET_NAMES:
-            toolset_typos.append(name)
-            continue
-        if name in seen:
-            continue
-        seen.add(name)
-        cleaned.append(name)
+        # A single element can itself be a legacy comma-joined string — the CLI
+        # turns `--skill "a, b"` into exactly that — so split inside elements as
+        # well. (Splitting before storage is what keeps one argv slot from ever
+        # carrying several names to the worker.)
+        for token in str(s).split(","):
+            name = token.strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            cleaned.append(name)
+    return cleaned
+
+
+def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Write-path validation on top of :func:`normalize_skills` — same cleaning
+    (a legacy comma-joined string is split, never passed through as one argv
+    slot, which is the invariant that matters at spawn time), plus a refusal of
+    toolset names. Those are rejected all at once because agents that confuse
+    the two usually pass several."""
+    cleaned = normalize_skills(skills)
+    if cleaned is None:
+        return None
+    toolset_typos = [n for n in cleaned if n.casefold() in KNOWN_TOOLSET_NAMES]
     if toolset_typos:
         quoted = ", ".join(repr(n) for n in toolset_typos)
         noun = "is a toolset name" if len(toolset_typos) == 1 else "are toolset names"
@@ -1249,7 +1278,7 @@ def _normalize_task_skills(skills: Optional[Iterable[str]]) -> Optional[list[str
             "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
             "capabilities (e.g. `web`, `browser`, `terminal`)."
         )
-    return cleaned
+    return [n for n in cleaned if n.casefold() not in KNOWN_TOOLSET_NAMES]
 
 
 def create_task(
@@ -3141,10 +3170,20 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    skills: Optional[Iterable[str]] = None,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    ``skills`` follows the same rule as the other fields — ``None`` means
+    "not sent, leave it alone" — and accepts the legacy comma-separated string
+    as well as a list. Either way it is persisted as a JSON array; ``[]`` is the
+    explicit "no extra skills" value.
+    """
+    skills_list = _normalize_task_skills(skills) if skills is not None else None
     changed_fields = [
-        field for field, value in (("title", title), ("body", body), ("priority", priority))
+        field for field, value in (
+            ("title", title), ("body", body), ("priority", priority), ("skills", skills_list),
+        )
         if value is not None
     ]
     with write_txn(conn):
@@ -3157,6 +3196,10 @@ def edit_task(
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if skills_list is not None:
+            # Same column shape as create_task: a JSON array (``[]`` = none).
+            assignments.append("skills = ?")
+            params.append(json.dumps(skills_list))
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
