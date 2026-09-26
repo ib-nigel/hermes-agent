@@ -133,7 +133,13 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
     assert args.command == "chat"
     assert args.model == "gpt-5.6-sol"
-    assert args.query == "work kanban task t_spawn_tools"
+    # The stub stays the FIRST LINE verbatim — the e2e worker-contract regex, the
+    # session-attribution reader and the auto-titler all key on it — and the board
+    # brief rides after it. This fixture's task has body=None, so the brief must
+    # still carry the title and must not emit an empty Body section.
+    assert args.query.startswith("work kanban task t_spawn_tools")
+    assert "Title: spawn tools" in args.query
+    assert "\nBody:" not in args.query
 
 
 def test_default_spawn_resolves_env_passthrough_under_multiplex(monkeypatch, tmp_path):

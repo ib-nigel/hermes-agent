@@ -2698,6 +2698,75 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
+# The dispatched worker prompt's first line. Kept as a constant because three
+# things key on it byte-for-byte: the e2e worker-contract regexes, the session
+# attribution reader that pairs a board task with the sessions that worked it,
+# and the auto-titler. Everything the brief adds goes AFTER it.
+WORKER_PROMPT_STUB = "work kanban task {task_id}"
+
+# A brief may not become a wall of text: a task body is human/agent-written and can
+# be arbitrarily long. Bodies run 1-2 kB in practice; this is the ceiling.
+WORKER_BRIEF_BODY_LIMIT = 6000
+
+
+def _clip_brief(text: str, limit: int) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n… [{len(text) - limit} more characters on the board]"
+
+
+def _worker_brief(task: Task) -> str:
+    """The task's own fields, appended to the worker prompt.
+
+    A dispatched worker used to receive nothing but ``work kanban task <id>``, so
+    every run re-derived the board row, the repo layout and the constraints by hand
+    — measured as ~25 tool calls of survey per worker. The dispatcher has already
+    read this row, so handing it over costs one cache-miss on the session's first
+    message and nothing on any later call.
+    """
+    if task is None:
+        return ""
+    out: list[str] = ["", "", "Task brief (the board row that dispatched you):"]
+    title = (task.title or "").strip()
+    if title:
+        out.append(f"Title: {title}")
+    facts = [f"status={task.status}"]
+    if task.priority:
+        facts.append(f"priority={task.priority}")
+    if task.assignee:
+        facts.append(f"assignee={task.assignee}")
+    if task.max_runtime_seconds:
+        facts.append(f"max_runtime={task.max_runtime_seconds}s")
+    out.append(" ".join(facts))
+    if task.block_kind:
+        out.append(f"Blocked kind: {task.block_kind}")
+    if task.workspace_kind and task.workspace_path:
+        # Batched task creation has been seen to point many rows at ONE scratch dir
+        # (11 rows named for t_6873a29f on this board). Handing a worker another
+        # task's directory without saying so is how it edits the wrong checkout.
+        note = ""
+        owner = re.search(r"(t_[0-9a-f]{4,})", Path(task.workspace_path).name or "")
+        if owner and owner.group(1) != task.id:
+            note = (f" — NOTE: named for {owner.group(1)}, not this task; confirm it is "
+                    f"the intended directory before writing")
+        out.append(f"Workspace: {task.workspace_kind} {task.workspace_path}{note}")
+    if task.branch_name:
+        out.append(f"Branch: {task.branch_name}")
+    contract = _clip_brief(task.completion_contract or "", 1200)
+    if contract:
+        out.append(f"Done means: {contract}")
+    if task.consecutive_failures:
+        why = _clip_brief(task.last_failure_error or "", 400)
+        out.append(f"Retry {task.consecutive_failures}: a previous attempt failed"
+                   + (f" — {why}" if why else ""))
+    body = _clip_brief(task.body or "", WORKER_BRIEF_BODY_LIMIT)
+    if body:
+        out.extend(["", "Body:", body])
+    # Never return a header with nothing under it.
+    return "\n".join(out) if len(out) > 3 else ""
+
+
 def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
@@ -2729,7 +2798,7 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> li
     worker_toolsets = _resolve_worker_cli_toolsets(hermes_home)
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
-    cmd.extend(["chat", "-q", f"work kanban task {task.id}"])
+    cmd.extend(["chat", "-q", WORKER_PROMPT_STUB.format(task_id=task.id) + _worker_brief(task)])
     # goal_mode rides the same `-q` path: cli.py runs the judge loop there too, so the
     # worker log keeps its live tool feed (forcing -Q blanked it).
     return cmd
