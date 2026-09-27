@@ -429,9 +429,8 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
     spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
     if spent + requested > cap:
         return (
-            f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "
-            f"delegation.oneshot_max_children). Do the remaining work yourself in this session — reviewing "
-            f"your own diff and running the tests inline is expected here, not a delegated review."
+            f"Delegation budget for this one-shot run allows at most {cap - spent} more subagent(s) "
+            f"({spent}/{cap} used; delegation.oneshot_max_children). Reduce this batch or do that part inline."
         )
     parent_agent._oneshot_children_spawned = spent + requested
     return None
