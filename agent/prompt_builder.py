@@ -341,8 +341,12 @@ KANBAN_GUIDANCE = (
     "`kanban_comment` the context, then `kanban_block(reason=...)` so the task surfaces on the board as needing "
     "input.\n"
     "- Do not assign follow-up work to yourself. Assign it to the right specialist profile.\n"
-    "- Do not call `delegate_task` as a board substitute. `delegate_task` is for short reasoning subtasks inside your "
-    "own run; board tasks are for cross-agent handoffs that outlive one API loop."
+    "- Do not call `delegate_task` as a board substitute — board tasks are for cross-agent "
+    "handoffs that outlive one API loop. Do use it for survey/recon inside your own run when "
+    "raw output would flood your window (repo sweeps, multi-file reads, log archaeology): "
+    "keep batches small (your run has a fixed delegation budget), brief each child with goal "
+    "+ context + `output_schema`, keep only its conclusion, and spot-check its citations "
+    "before relying on it. Children cannot touch the board."
 )
 
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
