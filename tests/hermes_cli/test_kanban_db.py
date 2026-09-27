@@ -1548,6 +1548,9 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # prefers the interpreter-bound module form (exactly this install; a PATH
 # shim could be attacker-planted or belong to another install, #111569) and
 # only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# On PM store-Python installs (the running interpreter IS the store Python)
+# the persisted launcher wins first: a bare module child cannot import the
+# checkout there, so the module form would die at spawn (#123044's class).
 # ---------------------------------------------------------------------------
 
 
@@ -1559,10 +1562,33 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     import sys
     from hermes_cli import kanban_db_dispatch as kbd
 
+    # This test isolates PATH-vs-module precedence; the store-Python branch
+    # has its own test below.
+    monkeypatch.setattr(kbd, "_store_python_launch_argv", lambda: None)
     monkeypatch.delenv("HERMES_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
     assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+    monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
+    assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
+
+
+def test_resolve_hermes_argv_prefers_store_python_launcher(monkeypatch):
+    """On a PM store-Python install the module form cannot work: the store
+    Python carries the checkout only on its in-process sys.path, so its
+    children die with ``No module named 'hermes_cli'`` (the live kanban
+    spawn-crash class). The store branch must win even though ``hermes_cli``
+    is importable here — and an explicit ``$HERMES_BIN`` still outranks it."""
+    import shutil
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(
+        kbd, "_store_python_launch_argv", lambda: ["/opt/store/.hermes/bin/hermes"])
+    monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
+    monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
+    assert kbd._resolve_hermes_argv() == ["/opt/store/.hermes/bin/hermes"]
 
     monkeypatch.setenv("HERMES_BIN", "/opt/hermes/bin/hermes")
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
@@ -1586,7 +1612,8 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        with mock.patch.object(shutil, "which", return_value=None), \
+             mock.patch.object(kbd, "_store_python_launch_argv", return_value=None):
             argv = kbd._resolve_hermes_argv()
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (

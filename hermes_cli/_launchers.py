@@ -76,6 +76,43 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
     return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
 
+
+def store_python_spawn_argv(
+    repo_root: Path, interpreter: str | Path | None = None
+) -> list[str] | None:
+    """Child-spawn argv when the caller runs under this tree's PM store Python.
+
+    A store Python has the checkout and the managed site-packages only on its
+    in-process ``sys.path`` (the launcher inserts the repo; bootstrap leases
+    the dependency generation), so ``[sys.executable, "-m", "hermes_cli.main"]``
+    children die at import — the #123044 class cron scripts already route
+    around (``cron/scheduler_script.py``). Child envs also strip Hermes-owned
+    PYTHONPATH (``tools/environments/local_pythonpath.py``), so the import path
+    cannot be handed down in the environment instead. Such callers must spawn
+    through the durable launcher — which re-bootstraps at child start — or,
+    when none is published, PM's bootstrap command itself.
+
+    Returns None when the caller is not this tree's store Python: venv and
+    developer interpreters keep whatever form their own resolver picked.
+    """
+    import sys
+
+    store = resolve_store_python(repo_root)
+    if store is None:
+        return None
+    running = interpreter if interpreter is not None else sys.executable
+    # Lexical identity, never resolve(): PM spells the store path through
+    # HERMES_HOME (which may carry '..') while sys.executable arrives
+    # normalized, so a raw compare re-execs every child forever (#122513).
+    if (os.path.normcase(os.path.abspath(str(store)))
+            != os.path.normcase(os.path.abspath(str(running)))):
+        return None
+    launcher = repo_root / ".hermes" / "bin" / "hermes"
+    if launcher.is_file() and (os.name == "nt" or os.access(launcher, os.X_OK)):
+        return installation_command(repo_root)
+    # No published launcher: the bootstrap command needs no file on disk.
+    return runtime_command(repo_root)
+
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")

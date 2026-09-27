@@ -2932,11 +2932,32 @@ def _get_channel_override(
     return None
 
 
+def _store_python_launch_argv() -> Optional[list[str]]:
+    """The update/restart argv for PM store-Python installs, or None elsewhere.
+
+    ``_launchers.store_python_spawn_argv`` returns the persisted launcher /
+    bootstrap form only when the running interpreter is this tree's store
+    Python — a bare ``-m`` child of it cannot import the checkout (#123044's
+    class). Split out so precedence tests can stub this branch explicitly.
+    """
+    try:
+        from hermes_cli._launchers import store_python_spawn_argv
+
+        return store_python_spawn_argv(Path(__file__).resolve().parents[1])
+    except Exception:
+        return None
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
-    (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
-    PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
-    /update or /restart re-execs it (#111569)."""
+    """Hermes update/restart argv: the persisted launcher when the running interpreter
+    is this tree's PM store Python (a bare ``-m`` child cannot import the checkout
+    there), else the running interpreter's ``python -m hermes_cli.main`` (exactly this
+    install), else ``hermes`` on PATH, else None. The module argv must win over PATH: a
+    PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install
+    when /update or /restart re-execs it (#111569)."""
+    store_argv = _store_python_launch_argv()
+    if store_argv is not None:
+        return store_argv
     try:
         import importlib.util
         if importlib.util.find_spec("hermes_cli") is not None:

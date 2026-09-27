@@ -2531,15 +2531,37 @@ def _hermes_path_argv(path: str) -> list[str]:
     return [_absolute_hermes_path(path)]
 
 
+def _store_python_launch_argv() -> Optional[list[str]]:
+    """The spawn argv for PM store-Python installs, or None on other layouts.
+
+    A store Python carries the checkout and its managed site-packages only on
+    its in-process ``sys.path``, so a bare ``[sys.executable, "-m",
+    "hermes_cli.main"]`` child cannot import either (the #123044 class; child
+    envs also strip Hermes-owned PYTHONPATH). ``_launchers.store_python_spawn_argv``
+    returns the persisted launcher / bootstrap form only when the running
+    interpreter is this tree's store Python. Split out so precedence tests can
+    stub this branch explicitly.
+    """
+    try:
+        from hermes_cli._launchers import store_python_spawn_argv
+
+        return store_python_spawn_argv(Path(__file__).resolve().parents[1])
+    except Exception:
+        return None
+
+
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
-    lets an attacker-planted ``hermes`` shadow the running install (#111569).
+    same-directory file), then — when the running interpreter is this tree's
+    PM store Python — the persisted launcher (a bare module child of the store
+    Python cannot import the checkout; see ``_store_python_launch_argv``),
+    then the running interpreter's ``sys.executable -m hermes_cli.main``
+    (exactly this install; also covers shim-less cron, systemd ``User=``,
+    launchd), then ``which("hermes")`` (Windows: safe PATH search, batch shims
+    fall back to the module form) only when ``hermes_cli`` is not importable.
+    The module argv must win over PATH: a PATH-first lookup lets an
+    attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
@@ -2554,6 +2576,10 @@ def _resolve_hermes_argv() -> list[str]:
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
+
+    store_argv = _store_python_launch_argv()
+    if store_argv is not None:
+        return store_argv
 
     try:
         if importlib.util.find_spec("hermes_cli") is not None:

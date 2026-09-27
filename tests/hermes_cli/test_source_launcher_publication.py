@@ -69,6 +69,35 @@ def select_generation(repo, name, value):
     return selected
 
 
+def test_store_python_spawn_argv_prefers_launcher_over_bare_module(tmp_path, monkeypatch):
+    """A caller running on the PM store Python must spawn children through the
+    persisted launcher (it re-bootstraps at child start), or PM's bootstrap
+    command when none is published — never a bare ``-m`` argv: a store-Python
+    child carries the checkout on neither its sys.path nor PYTHONPATH
+    (#123044's class; live-fired by kanban workers crashing at spawn)."""
+    repo, _home, _interpreter = fixture_tree(tmp_path, monkeypatch)
+    store_python = _launchers.resolve_store_python(repo)
+    assert store_python is not None
+
+    # A foreign interpreter is not this branch: callers keep their own form.
+    assert _launchers.store_python_spawn_argv(
+        repo, interpreter=Path("/nonexistent/other/python3")) is None
+
+    # The store Python itself, before any launcher is published -> bootstrap command.
+    command = _launchers.store_python_spawn_argv(repo, interpreter=store_python)
+    assert command == _launchers.runtime_command(repo)
+
+    # Once the install launcher is published it becomes the spawn form.
+    (repo / ".hermes" / "bin").mkdir(parents=True, exist_ok=True)
+    _launchers.ensure_install_launchers(repo, repo / ".hermes" / "bin")
+    assert _launchers.store_python_spawn_argv(repo, interpreter=store_python) == [
+        str(repo / ".hermes" / "bin" / "hermes")]
+
+    # No store Python at all -> not this branch.
+    monkeypatch.setattr(_launchers, "resolve_store_python", lambda root: None)
+    assert _launchers.store_python_spawn_argv(repo, interpreter=store_python) is None
+
+
 @pytest.mark.platforms("windows", "posix")
 @pytest.mark.parametrize("form", ["native", "shell"])
 def test_source_launchers_boot_selected_generation_from_custom_home(tmp_path, monkeypatch, form, real_bash):

@@ -100,7 +100,8 @@ class TestHandleUpdateCommand:
         from gateway.run import _resolve_hermes_bin
 
         fake_spec = MagicMock()
-        with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
+        with patch("gateway.run._store_python_launch_argv", return_value=None), \
+             patch("shutil.which", return_value="/tmp/attacker/hermes"), \
              patch("importlib.util.find_spec", return_value=fake_spec):
             result = _resolve_hermes_bin()
 
@@ -112,13 +113,29 @@ class TestHandleUpdateCommand:
         bare ``hermes`` string that a hostile PATH entry could shadow."""
         from gateway.run import _resolve_hermes_bin
 
-        with patch("shutil.which", return_value="/usr/local/bin/hermes"), \
+        with patch("gateway.run._store_python_launch_argv", return_value=None), \
+             patch("shutil.which", return_value="/usr/local/bin/hermes"), \
              patch("importlib.util.find_spec", return_value=None):
             assert _resolve_hermes_bin() == ["/usr/local/bin/hermes"]
 
-        with patch("shutil.which", return_value=None), \
+        with patch("gateway.run._store_python_launch_argv", return_value=None), \
+             patch("shutil.which", return_value=None), \
              patch("importlib.util.find_spec", side_effect=ImportError):
             assert _resolve_hermes_bin() is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_prefers_store_python_launcher(self):
+        """On a PM store-Python gateway the persisted launcher is the re-exec argv: a
+        bare ``-m`` child of the store Python cannot import hermes_cli (#123044's
+        class), so /update and /restart must not fall into that form — even when
+        hermes_cli resolves in-process and PATH offers a ``hermes``."""
+        from gateway.run import _resolve_hermes_bin
+
+        with patch("gateway.run._store_python_launch_argv",
+                   return_value=["/opt/store/.hermes/bin/hermes"]), \
+             patch("shutil.which", return_value="/tmp/attacker/hermes"), \
+             patch("importlib.util.find_spec", return_value=MagicMock()):
+            assert _resolve_hermes_bin() == ["/opt/store/.hermes/bin/hermes"]
 
 
     @pytest.mark.asyncio
